@@ -62,6 +62,7 @@ mod unix {
     use std::io::{self, BufRead};
     use std::mem;
     use std::os::unix::io::AsRawFd;
+    use tokio::io::AsyncBufReadExt;
 
     struct HiddenInput {
         fd: i32,
@@ -135,6 +136,31 @@ mod unix {
         std::mem::drop(hidden_input);
 
         super::fix_line_issues(password.into_inner())
+    }
+
+    /// Async reads a password from a given file descriptor
+    async fn read_password_from_fd_with_hidden_input_aync(
+        mut reader: tokio::io::BufReader<tokio::fs::File>,
+        fd: i32,
+    ) -> std::io::Result<String> {
+        let mut password = super::SafeString::new();
+
+        let hidden_input = HiddenInput::new(fd)?;
+
+        reader.read_line(&mut password).await?;
+
+        std::mem::drop(hidden_input);
+
+        super::fix_line_issues(password.into_inner())
+    }
+
+    /// Async reads a password from the TTY
+    pub async fn read_password_async() -> std::io::Result<String> {
+        let tty = tokio::fs::File::open("/dev/tty").await?;
+        let fd = tty.as_raw_fd();
+        let reader = tokio::io::BufReader::new(tty);
+
+        read_password_from_fd_with_hidden_input_aync(reader, fd).await
     }
 }
 
@@ -232,7 +258,7 @@ mod windows {
 }
 
 #[cfg(target_family = "unix")]
-pub use unix::read_password;
+pub use unix::{read_password, read_password_async};
 #[cfg(target_family = "wasm")]
 pub use wasm::read_password;
 #[cfg(target_family = "windows")]
@@ -259,6 +285,14 @@ pub fn prompt_password_from_bufread(
 /// Prompts on the TTY and then reads a password from TTY
 pub fn prompt_password(prompt: impl ToString) -> std::io::Result<String> {
     print_tty(prompt.to_string().as_str()).and_then(|_| read_password())
+}
+
+/// Prompts on the TTY and then reads a password from TTY
+pub async fn prompt_password_async(prompt: impl ToString) -> std::io::Result<String> {
+    match print_tty(prompt.to_string().as_str()) {
+        Ok(_) => read_password_async().await,
+        Err(err) => Err(err),
+    }
 }
 
 #[cfg(test)]
