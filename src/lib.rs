@@ -169,6 +169,7 @@ mod windows {
     use std::io::BufRead;
     use std::io::{self, BufReader};
     use std::os::windows::io::FromRawHandle;
+    use tokio::io::AsyncBufReadExt;
     use windows_sys::core::PCSTR;
     use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::Storage::FileSystem::{
@@ -255,6 +256,49 @@ mod windows {
 
         super::fix_line_issues(password.into_inner())
     }
+
+    /// Reads a password from a given file handle
+    async fn read_password_from_handle_with_hidden_input_async(
+        mut reader: tokio::io::BufReader<tokio::fs::File>,
+        handle: HANDLE,
+    ) -> io::Result<String> {
+        let mut password = super::SafeString::new();
+
+        let hidden_input = HiddenInput::new(handle)?;
+
+        reader.read_line(&mut password).await?;
+
+        // Newline for windows which otherwise prints on the same line.
+        println!();
+
+        std::mem::drop(hidden_input);
+
+        super::fix_line_issues(password.into_inner())
+    }
+
+    /// Async reads a password from the TTY
+    pub async fn read_password_async() -> std::io::Result<String> {
+        let handle = unsafe {
+            CreateFileA(
+                b"CONIN$\x00".as_ptr() as PCSTR,
+                GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                0,
+                INVALID_HANDLE_VALUE,
+            )
+        };
+
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        let reader = tokio::io::BufReader::new(
+            unsafe {tokio::fs::File::from_raw_handle(handle as _) }
+        );
+        read_password_from_handle_with_hidden_input_async(reader, handle).await
+    }
 }
 
 #[cfg(target_family = "unix")]
@@ -262,7 +306,7 @@ pub use unix::{read_password, read_password_async};
 #[cfg(target_family = "wasm")]
 pub use wasm::read_password;
 #[cfg(target_family = "windows")]
-pub use windows::read_password;
+pub use windows::{read_password, read_password_async};
 
 /// Reads a password from `impl BufRead`
 pub fn read_password_from_bufread(reader: &mut impl BufRead) -> std::io::Result<String> {
